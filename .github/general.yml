@@ -14,7 +14,7 @@ on:
   #   branches:
   #     - root-chapter-03-part0
   push:
-    branches:
+    branches-ignore:
       - main
 
 env:
