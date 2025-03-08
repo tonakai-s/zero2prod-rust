@@ -1,7 +1,8 @@
 use std::net::TcpListener;
 
-use sqlx::PgPool;
-use zero2prod_rust::configuration::get_configuration;
+use sqlx::{Connection, PgConnection, PgPool, Executor};
+use uuid::Uuid;
+use zero2prod_rust::configuration::{get_configuration, DatabaseSettings};
 
 pub struct TestApp {
     pub address: String,
@@ -13,14 +14,13 @@ async fn spawn_app() -> TestApp {
     let port = listener.local_addr().unwrap().port();
     let address = format!("http://127.0.0.1:{}", port);
 
-    let configuration = get_configuration().expect("Failed to read configuration.");
-    let connection_pool = PgPool::connect(
-        &configuration.database.connection_string()
-    )
-    .await
-    .expect("Failed to connect to Postgres");
+    let mut configuration = get_configuration().expect("Failed to read configuration.");
+    configuration.database.database_name = Uuid::new_v4().to_string();
+    let connection_pool = configure_database(&configuration.database).await;
 
-    let server = zero2prod_rust::startup::run(listener, connection_pool.clone()).expect("Failed to bind address");
+    let server = zero2prod_rust::startup::run(
+        listener, connection_pool.clone()
+    ).expect("Failed to bind address");
     // Launch the server as a background task
     // tokio::spawn returns a handle to the spawned future,
     // but we have no use for it here, hence the non-binding let
@@ -30,6 +30,38 @@ async fn spawn_app() -> TestApp {
         address,
         db_pool: connection_pool
     }
+}
+
+pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
+    let maintenance_seetings = DatabaseSettings {
+        database_name: "postgres".to_string(),
+        username: "postgres".to_string(),
+        password: "password".to_string(),
+        ..config.clone()
+    };
+
+    println!("{}", &maintenance_seetings.connection_string());
+
+    let mut connection = PgConnection::connect(
+        &maintenance_seetings.connection_string()
+    )
+    .await
+    .expect("Failed to connect to Postgres");
+    
+    connection
+        .execute(format!(r#"CREATE DATABASE "{}""#, &config.database_name).as_str())
+        .await
+        .expect("Failed on database creation");
+
+    let connection_pool = PgPool::connect(
+        &config.connection_string()
+    )
+    .await
+    .expect("Faile on pool creation");
+
+    sqlx::migrate!("./migrations").run(&connection_pool).await.expect("Failed on migration execution");
+
+    connection_pool
 }
 
 #[tokio::test]
